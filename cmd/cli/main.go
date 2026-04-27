@@ -11,6 +11,7 @@ import (
 	"github.com/dbs-rtf/agent/pkg/model"
 
 	// Import plugins to trigger init() registration
+	_ "github.com/dbs-rtf/agent/internal/adapters/mysql"
 	_ "github.com/dbs-rtf/agent/internal/operations/session_mgmt"
 	_ "github.com/dbs-rtf/agent/internal/operations/sql_diag"
 )
