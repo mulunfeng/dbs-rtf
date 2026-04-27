@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 
@@ -53,7 +54,7 @@ func Load(path string) (*Config, error) {
 	resolved := envRegex.ReplaceAllStringFunc(string(data), func(match string) string {
 		envVar := match[2 : len(match)-1]
 		if val := os.Getenv(envVar); val != "" {
-			return val
+			return fmt.Sprintf("%q", val)
 		}
 		return match
 	})
@@ -73,5 +74,15 @@ func Load(path string) (*Config, error) {
 		cfg.NLP.Model = "claude-sonnet-4-6"
 	}
 
-	return &cfg, nil
+	return &cfg, cfg.Validate()
+}
+
+func (c *Config) Validate() error {
+	if c.Server.Host == "" {
+		c.Server.Host = "127.0.0.1"
+	}
+	if c.Server.Port == 0 {
+		c.Server.Port = 8080
+	}
+	return nil
 }

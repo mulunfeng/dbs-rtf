@@ -20,6 +20,7 @@ type DBSError struct {
 	Message string
 	Detail  string
 	Retry   bool
+	err     error
 }
 
 func (e *DBSError) Error() string {
@@ -29,8 +30,12 @@ func (e *DBSError) Error() string {
 	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
 }
 
-func New(code ErrorCode, msg string) *DBSError {
-	return &DBSError{Code: code, Message: msg}
+func New(code ErrorCode, msg string, retry ...bool) *DBSError {
+	r := false
+	if len(retry) > 0 {
+		r = retry[0]
+	}
+	return &DBSError{Code: code, Message: msg, Retry: r}
 }
 
 func Wrap(code ErrorCode, msg string, detail error) *DBSError {
@@ -38,7 +43,11 @@ func Wrap(code ErrorCode, msg string, detail error) *DBSError {
 	if detail != nil {
 		d = detail.Error()
 	}
-	return &DBSError{Code: code, Message: msg, Detail: d}
+	return &DBSError{Code: code, Message: msg, Detail: d, err: detail}
+}
+
+func (e *DBSError) Unwrap() error {
+	return e.err
 }
 
 func IsDBSError(err error) bool {

@@ -10,7 +10,8 @@ database:
       type: "mysql"
       user: "${DB_USER}"
       password: "${DB_PASSWORD}"
-      tls: true
+      tls:
+        enabled: true
 
 audit:
   mode: "file"

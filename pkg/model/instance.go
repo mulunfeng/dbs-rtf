@@ -12,11 +12,11 @@ const (
 )
 
 type TLSConfig struct {
-	Enabled        bool
-	CACertPath     string
-	ClientCertPath string
-	ClientKeyPath  string
-	SkipVerify     bool
+	Enabled        bool   `yaml:"enabled"`
+	CACertPath     string `yaml:"ca_cert_path"`
+	ClientCertPath string `yaml:"client_cert_path"`
+	ClientKeyPath  string `yaml:"client_key_path"`
+	SkipVerify     bool   `yaml:"skip_verify"`
 }
 
 type InstanceConfig struct {

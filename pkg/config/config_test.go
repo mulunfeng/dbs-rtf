@@ -56,8 +56,8 @@ database:
       host: "localhost"
       port: 3306
       type: "mysql"
-      user: "root"
-      password: "${TEST_DB_PASS}"
+      user: root
+      password: ${TEST_DB_PASS}
 audit:
   mode: "file"
 security:
@@ -99,5 +99,12 @@ nlp:
 	}
 	if cfg.Security.MaxConcurrentOpsPerInst != 1 {
 		t.Errorf("expected default max concurrent 1, got %d", cfg.Security.MaxConcurrentOpsPerInst)
+	}
+}
+
+func TestLoadConfigFileNotFound(t *testing.T) {
+	_, err := Load("/nonexistent/path/config.yaml")
+	if err == nil {
+		t.Error("expected error for nonexistent file")
 	}
 }
