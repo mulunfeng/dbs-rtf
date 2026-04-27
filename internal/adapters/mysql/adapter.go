@@ -63,7 +63,19 @@ func (a *MySQLAdapter) Ping(ctx context.Context) error {
 	return a.db.PingContext(ctx)
 }
 
+func (a *MySQLAdapter) ensureConnected() error {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.db == nil {
+		return fmt.Errorf("not connected")
+	}
+	return nil
+}
+
 func (a *MySQLAdapter) Version(ctx context.Context) (string, error) {
+	if err := a.ensureConnected(); err != nil {
+		return "", err
+	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	var version string
@@ -119,9 +131,13 @@ func (a *MySQLAdapter) Query(ctx context.Context, sqlStr string, args ...any) (m
 }
 
 func (a *MySQLAdapter) GetVariables(ctx context.Context, pattern string) (map[string]string, error) {
+	if err := a.ensureConnected(); err != nil {
+		return nil, err
+	}
 	query := "SHOW VARIABLES"
 	if pattern != "" {
-		query += fmt.Sprintf(" LIKE '%s'", pattern)
+		safePattern := strings.NewReplacer(`\`, `\\`, `'`, `\'`, `%`, `\%`, `_`, `\_`).Replace(pattern)
+		query += fmt.Sprintf(" LIKE '%s'", safePattern)
 	}
 	rows, err := a.Query(ctx, query)
 	if err != nil {
@@ -137,6 +153,15 @@ func (a *MySQLAdapter) GetVariables(ctx context.Context, pattern string) (map[st
 }
 
 func (a *MySQLAdapter) SetVariable(ctx context.Context, name, value string, scope model.VariableScope) error {
+	if err := a.ensureConnected(); err != nil {
+		return err
+	}
+	// Validate variable name: only allow alphanumeric and underscore
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			return fmt.Errorf("invalid variable name: %s", name)
+		}
+	}
 	var keyword string
 	switch scope {
 	case model.ScopeGlobal:

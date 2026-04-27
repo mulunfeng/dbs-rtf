@@ -9,6 +9,7 @@ import (
 
 func buildDSN(cfg model.InstanceConfig) string {
 	params := url.Values{}
+	params.Set("parseTime", "true")
 	if cfg.Database != "" {
 		params.Set("database", cfg.Database)
 	}
@@ -20,7 +21,9 @@ func buildDSN(cfg model.InstanceConfig) string {
 	}
 
 	query := params.Encode()
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/", cfg.User, cfg.Password, cfg.Host, cfg.Port)
+	user := cfg.User
+	pass := url.QueryEscape(cfg.Password)
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/", user, pass, cfg.Host, cfg.Port)
 	if query != "" {
 		dsn += "?" + query
 	}
