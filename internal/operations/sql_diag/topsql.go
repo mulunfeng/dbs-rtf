@@ -3,6 +3,7 @@ package sql_diag
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/dbs-rtf/agent/internal/adapters"
@@ -18,12 +19,14 @@ func topSQL(ctx context.Context, req model.OperationRequest) (model.OperationRes
 		return result, nil
 	}
 
-	limit := req.Params["limit"]
-	if limit == "" {
-		limit = "10"
+	limit := 10
+	if l := req.Params["limit"]; l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil {
+			limit = parsed
+		}
 	}
 
-	query := fmt.Sprintf("SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, INFO FROM information_schema.PROCESSLIST WHERE COMMAND != 'Sleep' AND INFO IS NOT NULL ORDER BY TIME DESC LIMIT %s", limit)
+	query := fmt.Sprintf("SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, INFO FROM information_schema.PROCESSLIST WHERE COMMAND != 'Sleep' AND INFO IS NOT NULL ORDER BY TIME DESC LIMIT %d", limit)
 
 	rows, err := adapter.Query(ctx, query)
 	if err != nil {
@@ -38,7 +41,7 @@ func topSQL(ctx context.Context, req model.OperationRequest) (model.OperationRes
 	result.Data = rows
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("TopSQL (limit: %s):\n\n", limit))
+	sb.WriteString(fmt.Sprintf("TopSQL (limit: %d):\n\n", limit))
 	sb.WriteString(fmt.Sprintf("%-6s %-15s %-20s %-8s %s\n", "ID", "User", "Host", "Time(s)", "Query"))
 	sb.WriteString(strings.Repeat("-", 120) + "\n")
 	for _, row := range rows.Data {

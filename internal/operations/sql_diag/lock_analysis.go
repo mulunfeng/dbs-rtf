@@ -17,7 +17,7 @@ func lockAnalysis(ctx context.Context, req model.OperationRequest) (model.Operat
 		return result, nil
 	}
 
-	rows, err := adapter.Query(ctx, "SELECT * FROM information_schema.INNODB_LOCKS")
+	rows, err := adapter.Query(ctx, "SELECT * FROM performance_schema.data_locks")
 	if err != nil {
 		var result model.OperationResult
 		result.Success = false
