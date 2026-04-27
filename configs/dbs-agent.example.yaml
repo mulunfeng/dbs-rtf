@@ -1,0 +1,27 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+database:
+  instances:
+    - name: "prod-mysql-1"
+      host: "10.0.1.5"
+      port: 3306
+      type: "mysql"
+      user: "${DB_USER}"
+      password: "${DB_PASSWORD}"
+      tls: true
+
+audit:
+  mode: "file"
+  path: "./logs/audit/"
+
+security:
+  default_timeout: "30s"
+  dangerous_ops_confirm: true
+  max_concurrent_ops_per_instance: 1
+
+nlp:
+  provider: "claude"
+  model: "claude-sonnet-4-6"
+  temperature: 0.1
