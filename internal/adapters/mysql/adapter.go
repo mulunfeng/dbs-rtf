@@ -124,11 +124,22 @@ func (a *MySQLAdapter) Query(ctx context.Context, sqlStr string, args ...any) (m
 		}
 		row := make(model.Row)
 		for i, col := range cols {
-			row[col] = vals[i]
+			row[col] = normalizeValue(vals[i])
 		}
 		result.Data = append(result.Data, row)
 	}
 	return result, nil
+}
+
+func normalizeValue(v any) any {
+	switch val := v.(type) {
+	case []byte:
+		return string(val)
+	case nil:
+		return "<nil>"
+	default:
+		return v
+	}
 }
 
 func (a *MySQLAdapter) GetVariables(ctx context.Context, pattern string) (map[string]string, error) {
@@ -146,8 +157,8 @@ func (a *MySQLAdapter) GetVariables(ctx context.Context, pattern string) (map[st
 	}
 	result := make(map[string]string)
 	for _, row := range rows.Data {
-		name, _ := row["Variable_name"].(string)
-		value, _ := row["Value"].(string)
+		name := asString(row["Variable_name"])
+		value := asString(row["Value"])
 		result[name] = value
 	}
 	return result, nil
@@ -186,6 +197,34 @@ func (a *MySQLAdapter) SetVariable(ctx context.Context, name, value string, scop
 	return err
 }
 
+func asString(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func asInt64(v any) (int64, bool) {
+	switch val := v.(type) {
+	case int64:
+		return val, true
+	case uint64:
+		return int64(val), true
+	case int:
+		return int64(val), true
+	case []byte:
+		var n int64
+		fmt.Sscanf(string(val), "%d", &n)
+		return n, n != 0
+	default:
+		return 0, false
+	}
+}
+
 func (a *MySQLAdapter) GetProcessList(ctx context.Context) ([]model.ProcessInfo, error) {
 	rows, err := a.Query(ctx, "SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, INFO FROM information_schema.PROCESSLIST")
 	if err != nil {
@@ -194,30 +233,18 @@ func (a *MySQLAdapter) GetProcessList(ctx context.Context) ([]model.ProcessInfo,
 	var processes []model.ProcessInfo
 	for _, row := range rows.Data {
 		p := model.ProcessInfo{}
-		if v, ok := row["ID"].(int64); ok {
+		if v, ok := asInt64(row["ID"]); ok {
 			p.ID = int(v)
 		}
-		if v, ok := row["USER"].(string); ok {
-			p.User = v
-		}
-		if v, ok := row["HOST"].(string); ok {
-			p.Host = v
-		}
-		if v, ok := row["DB"].(string); ok {
-			p.Database = v
-		}
-		if v, ok := row["COMMAND"].(string); ok {
-			p.Command = v
-		}
-		if v, ok := row["TIME"].(int64); ok {
+		p.User = asString(row["USER"])
+		p.Host = asString(row["HOST"])
+		p.Database = asString(row["DB"])
+		p.Command = asString(row["COMMAND"])
+		if v, ok := asInt64(row["TIME"]); ok {
 			p.Time = v
 		}
-		if v, ok := row["STATE"].(string); ok {
-			p.State = v
-		}
-		if v, ok := row["INFO"].(string); ok {
-			p.Info = v
-		}
+		p.State = asString(row["STATE"])
+		p.Info = asString(row["INFO"])
 		processes = append(processes, p)
 	}
 	return processes, nil
@@ -244,20 +271,12 @@ func (a *MySQLAdapter) GetReplicationStatus(ctx context.Context) (model.Replicat
 	status := model.ReplicationStatus{
 		IsReplica: true,
 	}
-	if v, ok := row["Master_Host"].(string); ok {
-		status.SourceHost = v
-	}
-	if v, ok := row["Slave_IO_Running"].(string); ok {
-		status.IOState = v
-	}
-	if v, ok := row["Slave_SQL_Running"].(string); ok {
-		status.SQLState = v
-	}
-	if v, ok := row["Seconds_Behind_Master"].(string); ok {
+	status.SourceHost = asString(row["Master_Host"])
+	status.IOState = asString(row["Slave_IO_Running"])
+	status.SQLState = asString(row["Slave_SQL_Running"])
+	if v := asString(row["Seconds_Behind_Master"]); v != "" {
 		fmt.Sscanf(v, "%d", &status.SecondsBehind)
 	}
-	if v, ok := row["Last_Error"].(string); ok {
-		status.LastError = v
-	}
+	status.LastError = asString(row["Last_Error"])
 	return status, nil
 }

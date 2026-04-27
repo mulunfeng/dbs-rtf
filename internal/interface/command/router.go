@@ -2,11 +2,11 @@ package command
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/dbs-rtf/agent/internal/operations"
 	"github.com/dbs-rtf/agent/pkg/model"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 )
 
 type Router struct {
@@ -49,19 +49,23 @@ func (r *Router) RegisterExecCmd(run func(cmd *model.Command) error) {
 			port, _ := c.Flags().GetInt("port")
 			dbType, _ := c.Flags().GetString("db-type")
 			dryRun, _ := c.Flags().GetBool("dry-run")
+			user, _ := c.Flags().GetString("user")
+			password, _ := c.Flags().GetString("password")
+			database, _ := c.Flags().GetString("database")
+			paramList, _ := c.Flags().GetStringArray("param")
 
 			params := make(map[string]string)
-			flags := c.Flags()
-			flags.Visit(func(f *pflag.Flag) {
-				if f.Name != "plugin" && f.Name != "operation" && f.Name != "host" && f.Name != "port" && f.Name != "db-type" && f.Name != "dry-run" {
-					params[f.Name] = f.Value.String()
+			for _, p := range paramList {
+				kv := strings.SplitN(p, "=", 2)
+				if len(kv) == 2 {
+					params[kv[0]] = kv[1]
 				}
-			})
+			}
 
 			modelCmd := &model.Command{
 				Plugin:    plugin,
 				Operation: operation,
-				Instance:  model.InstanceConfig{Host: host, Port: port, Type: model.DBType(dbType)},
+				Instance:  model.InstanceConfig{Host: host, Port: port, Type: model.DBType(dbType), User: user, Password: password, Database: database},
 				Params:    params,
 				DryRun:    dryRun,
 			}
@@ -75,7 +79,11 @@ func (r *Router) RegisterExecCmd(run func(cmd *model.Command) error) {
 	execCmd.Flags().StringP("host", "i", "", "Database host")
 	execCmd.Flags().IntP("port", "P", 0, "Database port")
 	execCmd.Flags().String("db-type", "", "Database type (mysql, postgresql, redis, mongodb)")
+	execCmd.Flags().StringP("user", "u", "root", "Database user")
+	execCmd.Flags().StringP("password", "k", "", "Database password")
+	execCmd.Flags().StringP("database", "d", "", "Database name")
 	execCmd.Flags().Bool("dry-run", false, "Preview without executing")
+	execCmd.Flags().StringArray("param", nil, "Operation parameter as key=value (repeatable)")
 	execCmd.MarkFlagRequired("plugin")
 	execCmd.MarkFlagRequired("operation")
 	execCmd.MarkFlagRequired("host")

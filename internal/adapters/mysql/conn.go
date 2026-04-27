@@ -10,9 +10,6 @@ import (
 func buildDSN(cfg model.InstanceConfig) string {
 	params := url.Values{}
 	params.Set("parseTime", "true")
-	if cfg.Database != "" {
-		params.Set("database", cfg.Database)
-	}
 	if cfg.TLS != nil && cfg.TLS.Enabled {
 		params.Set("tls", "true")
 	}
@@ -20,10 +17,11 @@ func buildDSN(cfg model.InstanceConfig) string {
 		params.Set(k, v)
 	}
 
+	dbName := cfg.Database
 	query := params.Encode()
 	user := cfg.User
 	pass := url.QueryEscape(cfg.Password)
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/", user, pass, cfg.Host, cfg.Port)
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", user, pass, cfg.Host, cfg.Port, dbName)
 	if query != "" {
 		dsn += "?" + query
 	}
