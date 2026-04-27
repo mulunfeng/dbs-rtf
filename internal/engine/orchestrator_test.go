@@ -42,7 +42,7 @@ func TestAuthOperatorCanDoOperator(t *testing.T) {
 }
 
 func TestRateLimiterBlocksDuplicate(t *testing.T) {
-	limiter := NewRateLimiter(1)
+	limiter := NewRateLimiter()
 
 	err := limiter.Allow("10.0.1.5:3306")
 	if err != nil {

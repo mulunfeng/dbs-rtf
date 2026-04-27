@@ -9,15 +9,13 @@ import (
 )
 
 type RateLimiter struct {
-	mu            sync.Mutex
-	ops           map[string]time.Time
-	maxConcurrent int
+	mu  sync.Mutex
+	ops map[string]time.Time
 }
 
-func NewRateLimiter(maxConcurrent int) *RateLimiter {
+func NewRateLimiter() *RateLimiter {
 	return &RateLimiter{
-		ops:           make(map[string]time.Time),
-		maxConcurrent: maxConcurrent,
+		ops: make(map[string]time.Time),
 	}
 }
 
