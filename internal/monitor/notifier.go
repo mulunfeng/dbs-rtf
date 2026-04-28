@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/dbs-rtf/agent/pkg/model"
 )
 
 type Notifier interface {
