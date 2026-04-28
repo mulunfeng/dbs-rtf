@@ -1,0 +1,33 @@
+version: "3.8"
+
+# MySQL HA Proxy — listens on a stable port and forwards to the active MySQL master.
+# Business apps connect to this proxy, never directly to MySQL.
+#
+# Usage:
+#   docker compose -f infra/mysql-proxy/docker-compose.yml up -d
+#
+# Then connect your app to: host.docker.internal:3308
+# The proxy automatically detects MySQL failures and switches to the replica.
+
+services:
+  mysql-proxy:
+    build:
+      context: ../..
+      dockerfile: infra/mysql-proxy/Dockerfile
+    container_name: mysql-ha-proxy
+    ports:
+      - "3308:3308"   # Business apps connect here
+      - "8081:8081"   # Management API
+    environment:
+      MYSQL_PRIMARY_HOST: "mysql-primary"
+      MYSQL_PRIMARY_PORT: "3306"
+      MYSQL_REPLICA_HOST: "mysql-replica"
+      MYSQL_REPLICA_PORT: "3306"
+      PROXY_PORT: "3308"
+    networks:
+      - ha-test
+    restart: unless-stopped
+
+networks:
+  ha-test:
+    external: true
