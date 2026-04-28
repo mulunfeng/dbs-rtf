@@ -26,3 +26,17 @@ nlp:
   provider: "claude"
   model: "claude-sonnet-4-6"
   temperature: 0.1
+
+ha:
+  enabled: true
+  monitor:
+    interval: "5s"
+    ping_timeout: "3s"
+    consecutive_failures: 3
+  failover:
+    cooldown: "60s"
+    dry_run: false
+    notify_before: true
+  notification:
+    webhook_url: ""
+    log_only: true

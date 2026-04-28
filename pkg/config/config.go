@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"time"
 
 	"github.com/dbs-rtf/agent/pkg/model"
 	"gopkg.in/yaml.v3"
@@ -15,6 +16,7 @@ type Config struct {
 	Audit    AuditConfig    `yaml:"audit"`
 	Security SecurityConfig `yaml:"security"`
 	NLP      NLPConfig      `yaml:"nlp"`
+	HA       HAConfig       `yaml:"ha"`
 }
 
 type ServerConfig struct {
@@ -41,6 +43,47 @@ type NLPConfig struct {
 	Provider    string  `yaml:"provider"`
 	Model       string  `yaml:"model"`
 	Temperature float64 `yaml:"temperature"`
+}
+
+type HAConfig struct {
+	Enabled      bool             `yaml:"enabled"`
+	Monitor      MonitorConfig    `yaml:"monitor"`
+	Failover     FailoverConfig   `yaml:"failover"`
+	Notification NotificationConfig `yaml:"notification"`
+}
+
+type MonitorConfig struct {
+	Interval            Duration `yaml:"interval"`
+	PingTimeout         Duration `yaml:"ping_timeout"`
+	ConsecutiveFailures int      `yaml:"consecutive_failures"`
+}
+
+type FailoverConfig struct {
+	Cooldown     Duration `yaml:"cooldown"`
+	DryRun       bool     `yaml:"dry_run"`
+	NotifyBefore bool     `yaml:"notify_before"`
+}
+
+type NotificationConfig struct {
+	WebhookURL string `yaml:"webhook_url"`
+	LogOnly    bool   `yaml:"log_only"`
+}
+
+type Duration struct {
+	time.Duration
+}
+
+func (d *Duration) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var s string
+	if err := unmarshal(&s); err != nil {
+		return err
+	}
+	dur, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	d.Duration = dur
+	return nil
 }
 
 var envRegex = regexp.MustCompile(`\$\{(\w+)\}`)
@@ -72,6 +115,18 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.NLP.Model == "" {
 		cfg.NLP.Model = "claude-sonnet-4-6"
+	}
+	if cfg.HA.Monitor.Interval.Duration == 0 {
+		cfg.HA.Monitor.Interval.Duration = 5 * time.Second
+	}
+	if cfg.HA.Monitor.PingTimeout.Duration == 0 {
+		cfg.HA.Monitor.PingTimeout.Duration = 3 * time.Second
+	}
+	if cfg.HA.Monitor.ConsecutiveFailures == 0 {
+		cfg.HA.Monitor.ConsecutiveFailures = 3
+	}
+	if cfg.HA.Failover.Cooldown.Duration == 0 {
+		cfg.HA.Failover.Cooldown.Duration = 60 * time.Second
 	}
 
 	return &cfg, cfg.Validate()

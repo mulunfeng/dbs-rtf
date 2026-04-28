@@ -5,6 +5,7 @@ import (
 
 	"github.com/dbs-rtf/agent/internal/engine"
 	"github.com/dbs-rtf/agent/internal/interface/nlp"
+	"github.com/dbs-rtf/agent/internal/monitor"
 	"github.com/dbs-rtf/agent/internal/operations"
 	"github.com/dbs-rtf/agent/pkg/model"
 	"github.com/gin-gonic/gin"
@@ -15,9 +16,10 @@ type Server struct {
 	orchestrator *engine.Orchestrator
 	nlpParser    *nlp.IntentParser
 	defaultUser  engine.User
+	supervisor   *monitor.Supervisor
 }
 
-func NewServer(orchestrator *engine.Orchestrator) *Server {
+func NewServer(orchestrator *engine.Orchestrator, supervisor *monitor.Supervisor) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -26,6 +28,7 @@ func NewServer(orchestrator *engine.Orchestrator) *Server {
 		router:       r,
 		orchestrator: orchestrator,
 		defaultUser:  engine.User{Name: "api-user", Role: operations.RoleAdmin},
+		supervisor:   supervisor,
 	}
 
 	s.setupRoutes()
@@ -41,6 +44,14 @@ func (s *Server) setupRoutes() {
 	s.router.POST("/nlp", s.handleNLP)
 	s.router.GET("/plugins", s.handleListPlugins)
 	s.router.GET("/health", s.handleHealth)
+
+	if s.supervisor != nil {
+		mh := NewMonitorHandler(s.supervisor)
+		s.router.GET("/monitor/status", mh.GetStatus)
+		s.router.GET("/monitor/events", mh.GetEvents)
+		s.router.POST("/monitor/pause", mh.Pause)
+		s.router.POST("/monitor/resume", mh.Resume)
+	}
 }
 
 type ExecuteRequest struct {
