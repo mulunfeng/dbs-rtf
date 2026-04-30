@@ -610,15 +610,23 @@ func (s *Supervisor) demoteAndRejoin(ctx context.Context, recoveredInst model.In
 	}
 
 	// Step 4: Set read-only mode
-	log.Printf("[HA] [%s] Step 4: SET read_only=ON", recoveredKey)
-	if err := recoveredAdapter.SetVariable(ctx, "super_read_only", "ON", model.ScopeGlobal); err != nil {
-		log.Printf("[HA] [%s] SET super_read_only=ON (non-fatal): %v", recoveredKey, err)
-	}
+	// MySQL requires read_only=ON before super_read_only=ON.
+	// Replication SQL thread is exempt from both (kernel-level exemption),
+	// so enabling super_read_only on the replica is safe and recommended.
+	log.Printf("[HA] [%s] Step 4: SET read_only=ON, super_read_only=ON", recoveredKey)
 	if err := recoveredAdapter.SetVariable(ctx, "read_only", "ON", model.ScopeGlobal); err != nil {
 		log.Printf("[HA] [%s] SET read_only=ON failed: %v", recoveredKey, err)
 		s.recordEvent(model.FailoverEvent{
 			Timestamp: time.Now(), EventType: "rejoin_failed", From: recoveredKey,
 			Reason: fmt.Sprintf("SET read_only=ON: %v", err), Result: "failed",
+		})
+		return
+	}
+	if err := recoveredAdapter.SetVariable(ctx, "super_read_only", "ON", model.ScopeGlobal); err != nil {
+		log.Printf("[HA] [%s] SET super_read_only=ON failed: %v", recoveredKey, err)
+		s.recordEvent(model.FailoverEvent{
+			Timestamp: time.Now(), EventType: "rejoin_failed", From: recoveredKey,
+			Reason: fmt.Sprintf("SET super_read_only=ON: %v", err), Result: "failed",
 		})
 		return
 	}
@@ -743,6 +751,18 @@ func (s *Supervisor) reprovisionFromMaster(ctx context.Context, newMasterKey str
 	}
 
 	log.Printf("[HA] re-provisioning complete: %s now has %s's data", recoveredName, masterName)
+
+	// Set both read_only and super_read_only on the recovered node.
+	// Replication SQL thread is exempt from these restrictions at the kernel level,
+	// so enabling super_read_only is safe.
+	log.Printf("[HA] re-provisioning: setting read_only=ON, super_read_only=ON on %s", recoveredName)
+	resetCmd2 := exec.CommandContext(ctx, "docker", "exec", recoveredName,
+		"mysql", "-u", "root", "-prootpass123",
+		"-e", "SET GLOBAL read_only=ON; SET GLOBAL super_read_only=ON;")
+	if out, err := resetCmd2.CombinedOutput(); err != nil {
+		log.Printf("[HA] WARNING: failed to set read_only on %s: %v (output: %s)", recoveredName, err, string(out))
+	}
+
 	return nil
 }
 
