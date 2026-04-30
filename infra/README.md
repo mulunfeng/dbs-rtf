@@ -16,7 +16,6 @@ Business applications connect to port **3309** (proxy entry point). The proxy au
 |-----------|------|-------------|
 | mysql-proxy | 3309 | TCP proxy forwarding MySQL connections |
 | management API | 8081 | `/status` — current target, `/switch` — manual switch |
-| rto_monitor.py | — | RTO + data loss measurement tool |
 
 ## MySQL Proxy
 
@@ -67,6 +66,9 @@ The `hostname_map` translates container names to host addresses. This allows the
 
 ## RTO Monitor
 
+> Moved to `tools/rto-monitor/` — a standalone script loosely coupled with this project.
+> See `tools/rto-monitor/README.md` for usage.
+
 High-frequency probe tool for measuring MySQL HA failover RTO and data loss.
 
 ### Setup
@@ -79,10 +81,10 @@ pip install pymysql
 
 ```bash
 # Default: connect to 127.0.0.1:3309, 10 probes/sec
-python infra/rto_monitor.py
+python tools/rto-monitor/rto_monitor.py
 
 # Custom target and interval
-python infra/rto_monitor.py --host 127.0.0.1 --port 3309 --interval 0.05
+python tools/rto-monitor/rto_monitor.py --host 127.0.0.1 --port 3309 --interval 0.05
 ```
 
 Output: real-time dot-based progress (`.` = committed, `x` = failed), auto-wrapping to terminal width.
@@ -93,10 +95,10 @@ After failover, compare local committed records against the database to detect d
 
 ```bash
 # Verify latest log file
-python infra/rto_monitor.py --verify
+python tools/rto-monitor/rto_monitor.py --verify
 
 # Verify specific log file
-python infra/rto_monitor.py --verify --file infra/rto_log_20260430_165000.dat
+python tools/rto-monitor/rto_monitor.py --verify --file tools/rto-monitor/rto_log_20260430_165000.dat
 ```
 
 ### Log Format
@@ -151,6 +153,5 @@ infra/
 │   ├── keepalived-replica.conf
 │   ├── check_mysql.sh       # Health check script
 │   └── notify.sh            # State change notification
-├── vip-manager.sh           # VIP management script
-└── rto_monitor.py           # RTO + data loss measurement
+└── vip-manager.sh           # VIP management script
 ```

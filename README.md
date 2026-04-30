@@ -90,8 +90,8 @@ The HA subsystem provides automatic failover detection and recovery for MySQL pr
   **Data consistency**: Re-provision demoted primary from new primary's GTID-consistent snapshot
 - **代理切换**：HA Supervisor 通知代理在故障切换后重定向流量
   **Proxy switching**: HA Supervisor notifies proxy to redirect traffic after failover
-- **RTO 测量**：`infra/rto_monitor.py` 测量故障切换时长并验证零数据丢失
-  **RTO measurement**: `infra/rto_monitor.py` measures failover duration and verifies zero data loss
+- **RTO 测量**：`tools/rto-monitor/rto_monitor.py` 测量故障切换时长并验证零数据丢失
+  **RTO measurement**: `tools/rto-monitor/rto_monitor.py` measures failover duration and verifies zero data loss
 
 代理与监控配置详见 `infra/README.md`。
 See `infra/README.md` for proxy and monitoring setup.
