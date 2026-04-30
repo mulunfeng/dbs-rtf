@@ -126,6 +126,14 @@ func (m *MockAdapter) GetReplicationStatus(ctx context.Context) (model.Replicati
 	return m.ReplicationStatus, m.ReplicationErr
 }
 
+func (m *MockAdapter) GetExecutedGTIDSet(ctx context.Context) (string, error) {
+	return "fake-gtid-set", nil
+}
+
+func (m *MockAdapter) SetGTIDPurged(ctx context.Context, gtidSet string) error {
+	return nil
+}
+
 func matchPattern(s, pattern string) bool {
 	if pattern == "" {
 		return true

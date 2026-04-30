@@ -116,6 +116,27 @@ func failover(ctx context.Context, req model.OperationRequest) (model.OperationR
 	}
 	sb.WriteString("  Write verification — OK\n\n")
 
+	// Step 6: Enable semi-sync master replication
+	sb.WriteString("Step 5: Enabling semi-sync master replication...\n")
+	if _, err := adapter.Exec(ctx, "INSTALL PLUGIN rpl_semi_sync_master SONAME 'semisync_master.so'"); err != nil {
+		warnings = append(warnings, fmt.Sprintf("rpl_semi_sync_master install (may already exist): %v", err))
+	} else {
+		sb.WriteString("  INSTALL PLUGIN rpl_semi_sync_master — OK\n")
+	}
+	if err := adapter.SetVariable(ctx, "rpl_semi_sync_master_enabled", "ON", model.ScopeGlobal); err != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to enable rpl_semi_sync_master_enabled: %v", err))
+		sb.WriteString(fmt.Sprintf("  SET rpl_semi_sync_master_enabled=ON — FAILED: %v\n", err))
+	} else {
+		sb.WriteString("  SET rpl_semi_sync_master_enabled=ON — OK\n")
+	}
+	// Set timeout to 5s — if no slave acknowledges within 5s, fall back to async
+	if err := adapter.SetVariable(ctx, "rpl_semi_sync_master_timeout", "5000", model.ScopeGlobal); err != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to set rpl_semi_sync_master_timeout: %v", err))
+	} else {
+		sb.WriteString("  SET rpl_semi_sync_master_timeout=5000 — OK\n")
+	}
+	sb.WriteString("\n")
+
 	// Build rollback command
 	rollbackCmd := &model.Command{
 		Plugin:    "ha_mgmt",

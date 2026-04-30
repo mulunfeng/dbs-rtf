@@ -587,6 +587,12 @@ func (s *Supervisor) demoteAndRejoin(ctx context.Context, recoveredInst model.In
 	}
 	cancel()
 
+	// Step 2.7: Install and enable semi-sync slave plugin
+	log.Printf("[HA] [%s] Step 2.7: enabling semi-sync replication (slave side)", recoveredKey)
+	if err := setupSemiSyncSlave(ctx, recoveredAdapter); err != nil {
+		log.Printf("[HA] [%s] semi-sync slave setup (non-fatal): %v", recoveredKey, err)
+	}
+
 	// Step 3: Configure replication to new master
 	// Use CHANGE MASTER TO syntax (MySQL 5.7/8.0 compatible)
 	changeMasterSQL := fmt.Sprintf(
@@ -699,7 +705,7 @@ func (s *Supervisor) reprovisionFromMaster(ctx context.Context, newMasterKey str
 	log.Printf("[HA] re-provisioning: resetting %s and disabling read-only", recoveredName)
 	resetCmd := exec.CommandContext(ctx, "docker", "exec", recoveredName,
 		"mysql", "-u", "root", "-prootpass123",
-		"-e", "STOP SLAVE; RESET SLAVE ALL; RESET MASTER; SET GLOBAL super_read_only=OFF; SET GLOBAL read_only=OFF; SET sql_log_bin=0;")
+		"-e", "INSTALL PLUGIN rpl_semi_sync_slave SONAME 'semisync_slave.so'; STOP SLAVE; RESET SLAVE ALL; RESET MASTER; SET GLOBAL super_read_only=OFF; SET GLOBAL read_only=OFF; SET sql_log_bin=0;")
 	if out, err := resetCmd.CombinedOutput(); err != nil {
 		log.Printf("[HA] reset on %s: %v (output: %s)", recoveredName, err, string(out))
 	}
@@ -737,6 +743,28 @@ func (s *Supervisor) reprovisionFromMaster(ctx context.Context, newMasterKey str
 	}
 
 	log.Printf("[HA] re-provisioning complete: %s now has %s's data", recoveredName, masterName)
+	return nil
+}
+
+// setupSemiSyncSlave installs and enables semi-sync replication on the slave side.
+// The plugin must already be present in the MySQL plugin directory (default in MySQL images).
+func setupSemiSyncSlave(ctx context.Context, adapter adapters.DatabaseAdapter) error {
+	// Install plugin (fails silently if already installed)
+	_, _ = adapter.Exec(ctx, "INSTALL PLUGIN rpl_semi_sync_slave SONAME 'semisync_slave.so'")
+
+	// Enable semi-sync slave
+	if err := adapter.SetVariable(ctx, "rpl_semi_sync_slave_enabled", "ON", model.ScopeGlobal); err != nil {
+		return fmt.Errorf("enable rpl_semi_sync_slave_enabled: %v", err)
+	}
+
+	// Force restart of slave replication to pick up semi-sync
+	if _, err := adapter.Exec(ctx, "STOP SLAVE"); err != nil {
+		// May not have been running yet, ignore
+	}
+	if _, err := adapter.Exec(ctx, "START SLAVE"); err != nil {
+		return fmt.Errorf("START SLAVE after semi-sync: %v", err)
+	}
+
 	return nil
 }
 
