@@ -4,14 +4,18 @@ server:
 
 database:
   instances:
-    - name: "prod-mysql-1"
-      host: "10.0.1.5"
+    - name: "mysql-primary"
+      host: "127.0.0.1"
       port: 3306
       type: "mysql"
-      user: "${DB_USER}"
-      password: "${DB_PASSWORD}"
-      tls:
-        enabled: true
+      user: "root"
+      password: "rootpass123"
+    - name: "mysql-replica"
+      host: "127.0.0.1"
+      port: 3307
+      type: "mysql"
+      user: "root"
+      password: "rootpass123"
 
 audit:
   mode: "file"
@@ -37,6 +41,10 @@ ha:
     cooldown: "60s"
     dry_run: false
     notify_before: true
+    proxy_switch_url: "http://127.0.0.1:8081/switch"
+    master_hostname_map:
+      "127.0.0.1:3306": "mysql-primary"
+      "127.0.0.1:3307": "mysql-replica"
   notification:
     webhook_url: ""
     log_only: true

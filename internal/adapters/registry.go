@@ -45,4 +45,6 @@ type DatabaseAdapter interface {
 	KillProcess(ctx context.Context, processID int) error
 	StartBackup(ctx context.Context, opts model.BackupOptions) (model.BackupTask, error)
 	GetReplicationStatus(ctx context.Context) (model.ReplicationStatus, error)
+	GetExecutedGTIDSet(ctx context.Context) (string, error)
+	SetGTIDPurged(ctx context.Context, gtidSet string) error
 }

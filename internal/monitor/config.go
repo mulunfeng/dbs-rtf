@@ -9,9 +9,14 @@ type MonitorConfig struct {
 }
 
 type FailoverConfig struct {
-	Cooldown      time.Duration
-	DryRun        bool
-	NotifyBefore  bool
+	Cooldown       time.Duration
+	DryRun         bool
+	NotifyBefore   bool
+	ProxySwitchURL string
+	// MasterHostnameMap maps instance address (host:port) to the hostname
+	// that should be used inside MySQL containers for CHANGE MASTER TO.
+	// e.g. "127.0.0.1:3306" -> "mysql-primary", "127.0.0.1:3307" -> "mysql-replica"
+	MasterHostnameMap map[string]string
 }
 
 type NotificationConfig struct {
@@ -35,9 +40,10 @@ func DefaultHAConfig() HAConfig {
 			ConsecutiveFailures: 3,
 		},
 		Failover: FailoverConfig{
-			Cooldown:     60 * time.Second,
-			DryRun:       false,
-			NotifyBefore: true,
+			Cooldown:       60 * time.Second,
+			DryRun:         false,
+			NotifyBefore:   true,
+			ProxySwitchURL: "",
 		},
 		Notification: NotificationConfig{
 			LogOnly: true,

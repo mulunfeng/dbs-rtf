@@ -1,1 +1,41 @@
+# Binaries and build artifacts
+bin/*.exe
+bin/*.exe~
+*.exe
+*.exe~
+build/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.dat
+
+# Go
+*.test
+*.prof
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+
+# Local configs (not committed)
+configs/dbs-agent.yaml
+.env
+
+# Worktrees
 .worktrees/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+testdata/

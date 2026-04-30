@@ -259,6 +259,27 @@ func (a *MySQLAdapter) StartBackup(ctx context.Context, opts model.BackupOptions
 	return model.BackupTask{}, fmt.Errorf("backup not yet implemented")
 }
 
+func (a *MySQLAdapter) GetExecutedGTIDSet(ctx context.Context) (string, error) {
+	if err := a.ensureConnected(); err != nil {
+		return "", err
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	var gtidSet string
+	err := a.db.QueryRowContext(ctx, "SELECT @@global.gtid_executed").Scan(&gtidSet)
+	return gtidSet, err
+}
+
+func (a *MySQLAdapter) SetGTIDPurged(ctx context.Context, gtidSet string) error {
+	if err := a.ensureConnected(); err != nil {
+		return err
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	_, err := a.db.ExecContext(ctx, fmt.Sprintf("SET GLOBAL gtid_purged='%s'", gtidSet))
+	return err
+}
+
 func (a *MySQLAdapter) GetReplicationStatus(ctx context.Context) (model.ReplicationStatus, error) {
 	rows, err := a.Query(ctx, "SHOW SLAVE STATUS")
 	if err != nil {

@@ -6,8 +6,7 @@ version: "3.8"
 # Usage:
 #   docker compose -f infra/mysql-proxy/docker-compose.yml up -d
 #
-# Then connect your app to: host.docker.internal:3308
-# The proxy automatically detects MySQL failures and switches to the replica.
+# Then connect your app to: host.docker.internal:3309
 
 services:
   mysql-proxy:
@@ -16,14 +15,14 @@ services:
       dockerfile: infra/mysql-proxy/Dockerfile
     container_name: mysql-ha-proxy
     ports:
-      - "3308:3308"   # Business apps connect here
+      - "3309:3309"   # Business apps connect here
       - "8081:8081"   # Management API
     environment:
       MYSQL_PRIMARY_HOST: "mysql-primary"
       MYSQL_PRIMARY_PORT: "3306"
       MYSQL_REPLICA_HOST: "mysql-replica"
       MYSQL_REPLICA_PORT: "3306"
-      PROXY_PORT: "3308"
+      PROXY_PORT: "3309"
     networks:
       - ha-test
     restart: unless-stopped

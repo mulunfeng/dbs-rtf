@@ -14,31 +14,78 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"gopkg.in/yaml.v3"
 )
 
-type MySQLProxy struct {
-	mu         sync.RWMutex
-	activeHost string
-	activePort string
-	primary    string
-	replica    string
-	healthTick time.Duration
+type ProxyConfig struct {
+	ListenPort     int            `yaml:"listen_port"`
+	ManagementPort int            `yaml:"management_port"`
+	InitialMaster  string         `yaml:"initial_master"`
+	HostnameMap    map[string]string `yaml:"hostname_map"`
 }
 
-func NewMySQLProxy(primaryHost, primaryPort, replicaHost, replicaPort string, healthTick time.Duration) *MySQLProxy {
-	return &MySQLProxy{
-		activeHost: primaryHost,
-		activePort: primaryPort,
-		primary:    primaryHost + ":" + primaryPort,
-		replica:    replicaHost + ":" + replicaPort,
-		healthTick: healthTick,
+func loadConfig(path string) (*ProxyConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
 	}
+	var cfg ProxyConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	if cfg.ListenPort == 0 {
+		cfg.ListenPort = 3309
+	}
+	if cfg.ManagementPort == 0 {
+		cfg.ManagementPort = 8081
+	}
+	if cfg.InitialMaster == "" {
+		cfg.InitialMaster = "127.0.0.1:3306"
+	}
+	return &cfg, nil
 }
 
-func (p *MySQLProxy) GetActive() (string, string) {
+// MySQLProxy is a simple TCP proxy for MySQL with HTTP switch API.
+type MySQLProxy struct {
+	mu           sync.RWMutex
+	activeHost   string // resolved host address (e.g., 127.0.0.1)
+	activePort   string // resolved port (e.g., 3307)
+	hostnameMap  map[string]string // container_name -> host:port
+	backendAddrs map[string]string // container_name -> address (stable)
+	backendHealth map[string]bool  // container_name -> healthy
+	healthTick   time.Duration
+}
+
+func NewMySQLProxy(cfg *ProxyConfig, healthTick time.Duration) *MySQLProxy {
+	host, port := parseHostPort(cfg.InitialMaster)
+	proxy := &MySQLProxy{
+		activeHost:    host,
+		activePort:    port,
+		hostnameMap:   cfg.HostnameMap,
+		backendAddrs:  make(map[string]string),
+		backendHealth: make(map[string]bool),
+		healthTick:    healthTick,
+	}
+	// Initialize backends from hostname map
+	for name, addr := range cfg.HostnameMap {
+		proxy.backendAddrs[name] = addr
+	}
+	return proxy
+}
+
+// SwitchByContainerName switches the proxy target using a container name
+// and the internal port (3306).
+func (p *MySQLProxy) SwitchByContainerName(containerName, port string) {
+	addrKey := containerName + ":" + port
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.activeHost, p.activePort
+	resolved, ok := p.hostnameMap[containerName]
+	p.mu.RUnlock()
+	if !ok {
+		log.Printf("[proxy] WARNING: container name %q not found in hostname_map, using as-is", containerName)
+		resolved = addrKey
+	}
+	host, hostPort := parseHostPort(resolved)
+	p.SwitchTarget(host, hostPort)
 }
 
 func (p *MySQLProxy) SwitchTarget(host, port string) {
@@ -53,9 +100,16 @@ func (p *MySQLProxy) SwitchTarget(host, port string) {
 	}
 }
 
-func (p *MySQLProxy) checkMySQL(host, port string) bool {
+func (p *MySQLProxy) GetActive() (string, string) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.activeHost, p.activePort
+}
+
+func (p *MySQLProxy) checkMySQL(addr string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	host, port := parseHostPort(addr)
 	dsn := fmt.Sprintf("root:rootpass123@tcp(%s:%s)/mysql?timeout=3s", host, port)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -70,25 +124,27 @@ func (p *MySQLProxy) healthCheckLoop() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		activeHost, activePort := p.GetActive()
+		p.mu.RLock()
+		activeHost := p.activeHost
+		activePort := p.activePort
+		backendAddrs := make(map[string]string)
+		for k, v := range p.backendAddrs {
+			backendAddrs[k] = v
+		}
+		p.mu.RUnlock()
 
-		if p.checkMySQL(activeHost, activePort) {
-			continue
+		active := activeHost + ":" + activePort
+		activeHealthy := p.checkMySQL(active)
+		if !activeHealthy {
+			log.Printf("[proxy] HEALTH CHECK FAILED: active target %s is unreachable", active)
 		}
 
-		other := p.replica
-		if activeHost+":"+activePort == p.replica {
-			other = p.primary
-		}
-
-		if p.checkMySQL(activeHost, activePort) {
-			continue
-		}
-
-		// Parse other host:port
-		h, port, _ := net.SplitHostPort(other)
-		if h != "" {
-			p.SwitchTarget(h, port)
+		// Health status per backend
+		for name, addr := range backendAddrs {
+			healthy := p.checkMySQL(addr)
+			p.mu.Lock()
+			p.backendHealth[name] = healthy
+			p.mu.Unlock()
 		}
 	}
 }
@@ -153,7 +209,7 @@ func (p *MySQLProxy) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Host != "" && req.Port != "" {
-		p.SwitchTarget(req.Host, req.Port)
+		p.SwitchByContainerName(req.Host, req.Port)
 	}
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "switched to %s:%s", p.activeHost, p.activePort)
@@ -161,42 +217,78 @@ func (p *MySQLProxy) handleSwitch(w http.ResponseWriter, r *http.Request) {
 
 func (p *MySQLProxy) handleStatus(w http.ResponseWriter, r *http.Request) {
 	host, port := p.GetActive()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	p.mu.RLock()
+	backends := make(map[string]any)
+	for name, addr := range p.backendAddrs {
+		backends[name] = map[string]any{
+			"address": addr,
+			"healthy": p.backendHealth[name],
+		}
+	}
+	p.mu.RUnlock()
+
+	status := map[string]any{
 		"active_host": host,
 		"active_port": port,
-		"primary":     p.primary,
-		"replica":     p.replica,
-	})
+		"backends":    backends,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+}
+
+func parseHostPort(addr string) (host, port string) {
+	host = addr
+	port = "3306"
+	for i := len(addr) - 1; i >= 0; i-- {
+		if addr[i] == ':' {
+			host = addr[:i]
+			port = addr[i+1:]
+			break
+		}
+	}
+	return
 }
 
 func main() {
-	proxyPort := os.Getenv("PROXY_PORT")
-	if proxyPort == "" {
-		proxyPort = "3308"
+	configPath := os.Getenv("PROXY_CONFIG")
+	if configPath == "" {
+		configPath = "../../configs/mysql-proxy.yaml"
 	}
 
-	proxy := NewMySQLProxy(
-		"127.0.0.1", "3306",
-		"127.0.0.1", "3307",
-		5*time.Second,
-	)
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		log.Printf("[proxy] warning: could not load config: %v, using defaults", err)
+		cfg = &ProxyConfig{
+			ListenPort:     3309,
+			ManagementPort: 8081,
+			InitialMaster:  "127.0.0.1:3306",
+			HostnameMap: map[string]string{
+				"mysql-primary": "127.0.0.1:3306",
+				"mysql-replica": "127.0.0.1:3307",
+			},
+		}
+	}
+
+	proxy := NewMySQLProxy(cfg, 5*time.Second)
 
 	go proxy.healthCheckLoop()
 
-	addr := fmt.Sprintf("0.0.0.0:%s", proxyPort)
+	addr := fmt.Sprintf("0.0.0.0:%d", cfg.ListenPort)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("[proxy] listen %s: %v", addr, err)
 	}
-	log.Printf("[proxy] MySQL proxy listening on %s → %s:%s", addr, "127.0.0.1", "3306")
+	log.Printf("[proxy] MySQL proxy listening on %s → %s", addr, cfg.InitialMaster)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/switch", proxy.handleSwitch)
 	mux.HandleFunc("/status", proxy.handleStatus)
 	go func() {
-		log.Printf("[proxy] management API on :8081")
-		http.ListenAndServe(":8081", mux)
+		mgmtAddr := fmt.Sprintf(":%d", cfg.ManagementPort)
+		log.Printf("[proxy] management API on %s", mgmtAddr)
+		if err := http.ListenAndServe(mgmtAddr, mux); err != nil {
+			log.Printf("[proxy] management API error: %v", err)
+		}
 	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

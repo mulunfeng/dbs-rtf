@@ -1,0 +1,6 @@
+listen_port: 3309
+management_port: 8081
+initial_master: "127.0.0.1:3306"
+hostname_map:
+  "mysql-primary": "127.0.0.1:3306"
+  "mysql-replica": "127.0.0.1:3307"

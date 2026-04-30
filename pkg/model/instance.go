@@ -20,15 +20,15 @@ type TLSConfig struct {
 }
 
 type InstanceConfig struct {
-	Name     string            `yaml:"name"`
-	Host     string            `yaml:"host"`
-	Port     int               `yaml:"port"`
-	Type     DBType            `yaml:"type"`
-	User     string            `yaml:"user"`
-	Password string            `yaml:"password"`
-	Database string            `yaml:"database"`
-	Options  map[string]string `yaml:"options"`
-	TLS      *TLSConfig        `yaml:"tls"`
+	Name     string            `yaml:"name" json:"name"`
+	Host     string            `yaml:"host" json:"host"`
+	Port     int               `yaml:"port" json:"port"`
+	Type     DBType            `yaml:"type" json:"type"`
+	User     string            `yaml:"user" json:"user"`
+	Password string            `yaml:"password" json:"password"`
+	Database string            `yaml:"database" json:"database"`
+	Options  map[string]string `yaml:"options" json:"options"`
+	TLS      *TLSConfig        `yaml:"tls" json:"tls"`
 }
 
 func (i InstanceConfig) Address() string {

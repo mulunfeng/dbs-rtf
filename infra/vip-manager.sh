@@ -8,7 +8,7 @@
 set -e
 
 VIP="${VIP_ADDRESS:-172.18.0.100}"
-VIP_PORT="${VIP_PORT:-3308}"
+VIP_PORT="${VIP_PORT:-3309}"
 NETWORK="${NETWORK_NAME:-ha-test}"
 LOG_FILE="/tmp/vip-manager.log"
 

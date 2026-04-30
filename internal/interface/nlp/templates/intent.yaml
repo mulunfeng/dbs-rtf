@@ -14,8 +14,9 @@ system_prompt: |
   - session_mgmt.kill: Terminate sessions
   - backup_restore.dump: Backup
   - backup_restore.restore: Restore
-  - ha_mgmt.failover: Failover
+  - ha_mgmt.failover: Failover / promote replica
   - ha_mgmt.health: Health check
+  - ha_mgmt.replication: Replication status
   - param_mgmt.show: View parameters
   - param_mgmt.set: Modify parameters
   - log_analysis.collect: Log collection
@@ -38,5 +39,23 @@ examples:
         "operation": "kill",
         "instance": {"host": "10.0.1.5", "port": 3306, "db_type": "mysql"},
         "params": {"process_id": "12345"},
+        "missing_fields": []
+      }
+  - user: "检查下 10.0.1.5:3306 的健康状态"
+    output: |
+      {
+        "plugin": "ha_mgmt",
+        "operation": "health",
+        "instance": {"host": "10.0.1.5", "port": 3306, "db_type": "mysql"},
+        "params": {},
+        "missing_fields": []
+      }
+  - user: "查看 10.0.1.6:3306 的复制状态"
+    output: |
+      {
+        "plugin": "ha_mgmt",
+        "operation": "replication",
+        "instance": {"host": "10.0.1.6", "port": 3306, "db_type": "mysql"},
+        "params": {},
         "missing_fields": []
       }

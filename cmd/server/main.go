@@ -49,9 +49,11 @@ func main() {
 				ConsecutiveFailures: cfg.HA.Monitor.ConsecutiveFailures,
 			},
 			Failover: monitor.FailoverConfig{
-				Cooldown:     cfg.HA.Failover.Cooldown.Duration,
-				DryRun:       cfg.HA.Failover.DryRun,
-				NotifyBefore: cfg.HA.Failover.NotifyBefore,
+				Cooldown:          cfg.HA.Failover.Cooldown.Duration,
+				DryRun:            cfg.HA.Failover.DryRun,
+				NotifyBefore:      cfg.HA.Failover.NotifyBefore,
+				ProxySwitchURL:    cfg.HA.Failover.ProxySwitchURL,
+				MasterHostnameMap: cfg.HA.Failover.MasterHostnameMap,
 			},
 			Notification: monitor.NotificationConfig{
 				WebhookURL: cfg.HA.Notification.WebhookURL,
@@ -86,6 +88,7 @@ func main() {
 
 	if haSupervisor != nil {
 		haSupervisor.Start(context.Background())
+		haSupervisor.SyncProxy()
 		log.Println("HA monitor started")
 	}
 

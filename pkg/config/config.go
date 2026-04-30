@@ -59,9 +59,11 @@ type MonitorConfig struct {
 }
 
 type FailoverConfig struct {
-	Cooldown     Duration `yaml:"cooldown"`
-	DryRun       bool     `yaml:"dry_run"`
-	NotifyBefore bool     `yaml:"notify_before"`
+	Cooldown          Duration `yaml:"cooldown"`
+	DryRun            bool     `yaml:"dry_run"`
+	NotifyBefore      bool     `yaml:"notify_before"`
+	ProxySwitchURL    string   `yaml:"proxy_switch_url"`
+	MasterHostnameMap map[string]string `yaml:"master_hostname_map"`
 }
 
 type NotificationConfig struct {

@@ -1,0 +1,12 @@
+.git/
+.worktrees/
+.idea/
+.vscode/
+bin/
+logs/
+__pycache__/
+*.pyc
+*.dat
+*.exe
+.DS_Store
+Thumbs.db

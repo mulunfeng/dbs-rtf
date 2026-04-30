@@ -1,11 +1,17 @@
 #!/bin/bash
 # MySQL health check for keepalived
 # Exits 0 if MySQL is healthy, 1 if not
+#
+# Environment variables:
+#   MYSQL_HOST     (default: 127.0.0.1)
+#   MYSQL_PORT     (default: 3306)
+#   MYSQL_USER     (default: root)
+#   MYSQL_PASSWORD (default: change_me)
 
 MYSQL_HOST=${MYSQL_HOST:-127.0.0.1}
 MYSQL_PORT=${MYSQL_PORT:-3306}
 MYSQL_USER=${MYSQL_USER:-root}
-MYSQL_PASSWORD=${MYSQL_PASSWORD:-rootpass123}
+MYSQL_PASSWORD=${MYSQL_PASSWORD:-change_me}
 
 # Try to connect and run a simple query
 result=$(mysqladmin -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" --password="$MYSQL_PASSWORD" ping 2>/dev/null)
