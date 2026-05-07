@@ -351,13 +351,18 @@ def test_primary_failover(rto, round_num):
     print(f"  {C.B}Round {round_num}: Primary Failover{C.N}", flush=True)
     print(f"    Master: {master_name} ({master_addr})  |  Replica: {replica_name}", flush=True)
 
+    # Record round marker for RTO log filtering
+    rto_marker = f"---ROUND-{round_num}-START---"
+    try:
+        with open(RTO_LOG_FILE, "a") as f:
+            f.write(f"\n{rto_marker}\n")
+    except Exception:
+        pass
+
     # Kill master
     t0 = time.monotonic()
     kill_container(master_name)
     print(f"    Killed {master_name} at {datetime.now().strftime('%H:%M:%S')}", flush=True)
-
-    # Record log file mtime before failover to filter stale RTO entries
-    pre_failover_mtime = os.path.getmtime(RTO_LOG_FILE) if os.path.exists(RTO_LOG_FILE) else None
 
     # Wait for failover (3 consecutive pings + processing = ~15s)
     time.sleep(25)
@@ -381,8 +386,8 @@ def test_primary_failover(rto, round_num):
     rc, verify_out, _ = rto.verify()
     rpo_ok = "no data loss detected" in verify_out
 
-    # Parse RTO from the stress log, filtering out entries written before failover
-    rto_val = _parse_rto_from_log(RTO_LOG_FILE, after_timestamp=pre_failover_mtime)
+    # Parse RTO from the stress log, only entries after our round marker
+    rto_val = _parse_rto_from_log(RTO_LOG_FILE, marker=rto_marker)
 
     if not rpo_ok:
         return {"round": round_num, "scenario": "primary_failover", "status": "FAIL",
@@ -424,12 +429,17 @@ def test_replica_only(rto, round_num):
     print(f"  {C.B}Round {round_num}: Replica-Only Failure{C.N}", flush=True)
     print(f"    Master: {master_name} ({master_addr})  |  Replica: {replica_name}", flush=True)
 
+    # Record round marker for RTO log filtering
+    rto_marker = f"---ROUND-{round_num}-START---"
+    try:
+        with open(RTO_LOG_FILE, "a") as f:
+            f.write(f"\n{rto_marker}\n")
+    except Exception:
+        pass
+
     # Kill replica only
     kill_container(replica_name)
     print(f"    Killed {replica_name} at {datetime.now().strftime('%H:%M:%S')}", flush=True)
-
-    # Record log file mtime before failure to filter stale RTO entries
-    pre_failover_mtime = os.path.getmtime(RTO_LOG_FILE) if os.path.exists(RTO_LOG_FILE) else None
 
     # Wait briefly — primary should be unaffected
     time.sleep(15)
@@ -457,7 +467,7 @@ def test_replica_only(rto, round_num):
     rc, verify_out, _ = rto.verify()
     rpo_ok = "no data loss detected" in verify_out
 
-    rto_val = _parse_rto_from_log(RTO_LOG_FILE, after_timestamp=pre_failover_mtime)
+    rto_val = _parse_rto_from_log(RTO_LOG_FILE, marker=rto_marker)
 
     if not rpo_ok:
         return {"round": round_num, "scenario": "replica_only", "status": "FAIL",
@@ -484,23 +494,25 @@ def test_replica_only(rto, round_num):
             "rto": rto_val, "rpo": 0}
 
 
-def _parse_rto_from_log(log_path, after_timestamp=None):
+def _parse_rto_from_log(log_path, marker=None):
     """Parse the latest RTO value from the monitor stress log.
 
-    If after_timestamp is given (as a time.struct_time), only consider
-    entries written after that point, to avoid reading stale values.
+    If marker is given (e.g. "---ROUND-5---"), only consider RTO entries
+    written AFTER that marker in the file, to avoid reading stale values
+    from previous rounds.
     """
     try:
         if not os.path.exists(log_path):
             return None
-        # If a timestamp filter is requested, check file mtime first
-        if after_timestamp is not None:
-            mtime = os.path.getmtime(log_path)
-            if mtime < after_timestamp:
-                return None
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
         import re
+        if marker:
+            # Split at the marker, only search the portion after it
+            idx = content.rfind(marker)
+            if idx == -1:
+                return None
+            content = content[idx:]
         matches = re.findall(r'RTO=([\d.]+)s', content)
         if matches:
             return float(matches[-1])
