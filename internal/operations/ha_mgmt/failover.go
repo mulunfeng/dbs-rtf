@@ -130,7 +130,7 @@ func failover(ctx context.Context, req model.OperationRequest) (model.OperationR
 		sb.WriteString("  SET rpl_semi_sync_master_enabled=ON — OK\n")
 	}
 	// Set timeout to 5s — if no slave acknowledges within 5s, fall back to async
-	if err := adapter.SetVariable(ctx, "rpl_semi_sync_master_timeout", "5000", model.ScopeGlobal); err != nil {
+	if _, err := adapter.Exec(ctx, "SET GLOBAL rpl_semi_sync_master_timeout=5000"); err != nil {
 		warnings = append(warnings, fmt.Sprintf("failed to set rpl_semi_sync_master_timeout: %v", err))
 	} else {
 		sb.WriteString("  SET rpl_semi_sync_master_timeout=5000 — OK\n")

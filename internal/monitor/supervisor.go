@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -207,14 +208,11 @@ func (s *Supervisor) GetEvents() []model.FailoverEvent {
 }
 
 func (s *Supervisor) loop(ctx context.Context) {
-	ticker := time.NewTicker(s.config.Monitor.Interval)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-time.After(s.config.Monitor.Interval):
 			s.mu.RLock()
 			paused := s.paused
 			s.mu.RUnlock()
@@ -234,13 +232,46 @@ func (s *Supervisor) tick(ctx context.Context) {
 
 	for _, inst := range s.instances {
 		key := inst.Address()
-		hb, exists := s.heartbeat[key]
-		if !exists {
-			continue
-		}
-
 		status := s.status[key]
 		wasDown := (status.State == model.StateDown)
+
+		// Get or create heartbeat checker on-demand
+		hb, exists := s.heartbeat[key]
+		if !exists {
+			// Try to create a fresh adapter — node may have failed during init
+			// but recovered since then.
+			adapter, err := adapters.New(inst)
+			if err != nil {
+				// Cannot even create adapter — treat as down
+				status.ConsecutiveFails++
+				status.State = model.StateDown
+				status.LastCheck = time.Now()
+				// Check if we should trigger failover
+				if status.ConsecutiveFails >= s.config.Monitor.ConsecutiveFailures {
+					log.Printf("[HA] threshold reached for %s (no adapter): fails=%d", key, status.ConsecutiveFails)
+					s.handleInstanceDown(ctx, key, inst, status, err)
+				}
+				continue
+			}
+			ctxConn, cancel := context.WithTimeout(ctx, s.config.Monitor.PingTimeout)
+			if err := adapter.Connect(ctxConn); err != nil {
+				cancel()
+				// Connection failed — still down
+				status.ConsecutiveFails++
+				status.State = model.StateDown
+				status.LastCheck = time.Now()
+				// Check if we should trigger failover
+				if status.ConsecutiveFails >= s.config.Monitor.ConsecutiveFailures {
+					log.Printf("[HA] threshold reached for %s (connect failed): fails=%d", key, status.ConsecutiveFails)
+					s.handleInstanceDown(ctx, key, inst, status, err)
+				}
+				continue
+			}
+			hb = NewHeartbeatChecker(adapter, s.config.Monitor.PingTimeout)
+			s.heartbeat[key] = hb
+			cancel()
+		}
+
 		result := hb.Ping(ctx)
 		status.LastCheck = time.Now()
 		status.LastPingLatency = result.Latency
@@ -264,6 +295,30 @@ func (s *Supervisor) tick(ctx context.Context) {
 			status.ConsecutiveFails = 0
 			status.State = model.StateHealthy
 			delete(s.pendingDemotion, key)
+
+			// For non-master nodes: verify replication is actually running.
+			// Container restarts wipe CHANGE MASTER TO and read_only settings,
+			// so a node may appear healthy but have no replication configured.
+			if key != s.activeMasterKey && s.activeMasterKey != "" && !s.pendingDemotion[key] {
+				// Don't rejoin if the active master is down — failover will handle it.
+				masterStatus := s.status[s.activeMasterKey]
+				if masterStatus != nil && masterStatus.State == model.StateDown {
+					continue
+				}
+				// Also verify the master is actually reachable before attempting rejoin.
+				// This prevents race conditions where the master is going down but
+				// hasn't been marked as StateDown yet.
+				if !s.isMasterReachable(s.activeMasterKey) {
+					continue
+				}
+				s.mu.Unlock()
+				needsRejoin := s.checkReplicationHealth(ctx, inst, key)
+				if needsRejoin {
+					s.pendingDemotion[key] = true
+					s.demoteAndRejoin(ctx, inst, s.activeMasterKey)
+				}
+				s.mu.Lock()
+			}
 			continue
 		}
 
@@ -447,16 +502,45 @@ func (s *Supervisor) findHealthyReplica(ctx context.Context, masterKey string) *
 			continue
 		}
 
-		hb, exists := s.heartbeat[key]
-		if !exists {
-			continue
+		// Prefer existing heartbeat checker, but also try fresh connections
+		// for candidates that may have failed during initialization.
+		var healthy bool
+		if hb, exists := s.heartbeat[key]; exists {
+			result := hb.Ping(ctx)
+			healthy = result.OK
+		} else {
+			// No heartbeat checker — try a fresh adapter connection
+			adapter, err := adapters.New(inst)
+			if err == nil {
+				ctxConn, cancel := context.WithTimeout(ctx, s.config.Monitor.PingTimeout)
+				if err := adapter.Connect(ctxConn); err == nil {
+					healthy = adapter.Ping(ctxConn) == nil
+				}
+				cancel()
+			}
 		}
 
-		result := hb.Ping(ctx)
-		if result.OK {
+		if healthy {
 			return &inst
 		}
 	}
+
+	// Fallback: if only two instances and the only other one was promoted
+	// as active master (via detectActiveMaster) but not actually failed-over,
+	// return it so handleInstanceDown can make it truly writable.
+	if len(s.instances) == 2 {
+		for _, inst := range s.instances {
+			key := inst.Address()
+			if key == masterKey {
+				continue
+			}
+			if key == s.activeMasterKey {
+				log.Printf("[HA] findHealthyReplica: returning active master %s as only candidate for failover", key)
+				return &inst
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -484,8 +568,58 @@ func (s *Supervisor) notifyProxy(newMaster string) {
 	}
 }
 
+// isMasterReachable does a quick TCP connectivity check to verify the master
+// is accepting connections. This is cheaper than a full MySQL handshake and
+// prevents attempting reprovision against a dying master.
+func (s *Supervisor) isMasterReachable(masterKey string) bool {
+	_, err := net.DialTimeout("tcp", masterKey, 2*time.Second)
+	if err != nil {
+		log.Printf("[HA] isMasterReachable(%s): unreachable: %v", masterKey, err)
+		return false
+	}
+	return true
+}
+
+// checkReplicationHealth verifies that a non-master node has active replication
+// configured. Returns true if replication is missing or broken, indicating the
+// node needs to be re-provisioned as a replica.
+func (s *Supervisor) checkReplicationHealth(ctx context.Context, inst model.InstanceConfig, key string) bool {
+	adapter, err := adapters.New(inst)
+	if err != nil {
+		log.Printf("[HA] [%s] checkReplicationHealth: create adapter failed: %v", key, err)
+		return true
+	}
+	ctxConn, cancel := context.WithTimeout(ctx, s.config.Monitor.PingTimeout)
+	if err := adapter.Connect(ctxConn); err != nil {
+		cancel()
+		log.Printf("[HA] [%s] checkReplicationHealth: connect failed: %v", key, err)
+		return true
+	}
+	cancel()
+	defer adapter.Close()
+
+	status, err := adapter.GetReplicationStatus(ctx)
+	if err != nil {
+		// No replication configured (e.g. "slave status" returns empty)
+		log.Printf("[HA] [%s] checkReplicationHealth: no replication configured: %v", key, err)
+		return true
+	}
+
+	if status.IOState != "Yes" || status.SQLState != "Yes" {
+		log.Printf("[HA] [%s] checkReplicationHealth: replication threads not running: IO=%s SQL=%s", key, status.IOState, status.SQLState)
+		return true
+	}
+
+	return false
+}
+
 func (s *Supervisor) demoteAndRejoin(ctx context.Context, recoveredInst model.InstanceConfig, newMasterKey string) {
 	recoveredKey := recoveredInst.Address()
+	defer func() {
+		s.mu.Lock()
+		delete(s.pendingDemotion, recoveredKey)
+		s.mu.Unlock()
+	}()
 	log.Printf("[HA] detected recovered node %s — attempting demote to replica of %s", recoveredKey, newMasterKey)
 
 	s.recordEvent(model.FailoverEvent{
@@ -660,7 +794,6 @@ func (s *Supervisor) demoteAndRejoin(ctx context.Context, recoveredInst model.In
 		if s.status[recoveredKey] != nil {
 			s.status[recoveredKey].State = model.StateHealthy
 		}
-		delete(s.pendingDemotion, recoveredKey)
 		s.mu.Unlock()
 	} else {
 		log.Printf("[HA] [%s] replication not healthy: IO=%s SQL=%s", recoveredKey, status.IOState, status.SQLState)
@@ -711,11 +844,16 @@ func (s *Supervisor) reprovisionFromMaster(ctx context.Context, newMasterKey str
 
 	// Step 1: Reset recovered node and disable read-only
 	log.Printf("[HA] re-provisioning: resetting %s and disabling read-only", recoveredName)
-	resetCmd := exec.CommandContext(ctx, "docker", "exec", recoveredName,
+	// Run statements separately so INSTALL PLUGIN failure doesn't block RESET MASTER
+	exec.CommandContext(ctx, "docker", "exec", recoveredName,
 		"mysql", "-u", "root", "-prootpass123",
-		"-e", "INSTALL PLUGIN rpl_semi_sync_slave SONAME 'semisync_slave.so'; STOP SLAVE; RESET SLAVE ALL; RESET MASTER; SET GLOBAL super_read_only=OFF; SET GLOBAL read_only=OFF; SET sql_log_bin=0;")
-	if out, err := resetCmd.CombinedOutput(); err != nil {
-		log.Printf("[HA] reset on %s: %v (output: %s)", recoveredName, err, string(out))
+		"-e", "STOP SLAVE; RESET SLAVE ALL;").Run()
+	// RESET MASTER clears GTID_EXECUTED — critical for GTID-based reprovisioning
+	resetMaster := exec.CommandContext(ctx, "docker", "exec", recoveredName,
+		"mysql", "-u", "root", "-prootpass123",
+		"-e", "RESET MASTER; SET GLOBAL super_read_only=OFF; SET GLOBAL read_only=OFF;")
+	if out, err := resetMaster.CombinedOutput(); err != nil {
+		log.Printf("[HA] WARNING: reset master on %s: %v (output: %s)", recoveredName, err, string(out))
 	}
 
 	// Step 2: Dump from master with --set-gtid-purged=ON
