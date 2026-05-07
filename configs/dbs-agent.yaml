@@ -1,0 +1,50 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+database:
+  instances:
+    - name: "mysql-primary"
+      host: "127.0.0.1"
+      port: 3306
+      type: "mysql"
+      user: "root"
+      password: "rootpass123"
+    - name: "mysql-replica"
+      host: "127.0.0.1"
+      port: 3307
+      type: "mysql"
+      user: "root"
+      password: "rootpass123"
+
+audit:
+  mode: "file"
+  path: "./logs/audit/"
+
+security:
+  default_timeout: "30s"
+  dangerous_ops_confirm: true
+  max_concurrent_ops_per_instance: 1
+
+nlp:
+  provider: "claude"
+  model: "claude-sonnet-4-6"
+  temperature: 0.1
+
+ha:
+  enabled: true
+  monitor:
+    interval: "5s"
+    ping_timeout: "3s"
+    consecutive_failures: 3
+  failover:
+    cooldown: "60s"
+    dry_run: false
+    notify_before: true
+    proxy_switch_url: "http://127.0.0.1:8081/switch"
+    master_hostname_map:
+      "127.0.0.1:3306": "mysql-primary"
+      "127.0.0.1:3307": "mysql-replica"
+  notification:
+    webhook_url: ""
+    log_only: true

@@ -322,24 +322,32 @@ def run(cfg):
 
     seq = 0
     while alive:
-        seq += 1
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        t0 = time.monotonic()
+        try:
+            seq += 1
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            t0 = time.monotonic()
 
-        ok, insert_id = do_probe(db, seq, ts)
-        ms = (time.monotonic() - t0) * 1000
+            ok, insert_id = do_probe(db, seq, ts)
+            ms = (time.monotonic() - t0) * 1000
 
-        if ok and insert_id > 0:
-            df.append(seq, insert_id, ts)
+            if ok and insert_id > 0:
+                df.append(seq, insert_id, ts)
 
-        rpt.record(ok, ms)
+            rpt.record(ok, ms)
 
-        # Interruptible sleep
-        elapsed = time.monotonic() - t0
-        left = max(0, cfg.interval - elapsed)
-        end = time.monotonic() + left
-        while time.monotonic() < end and alive:
-            time.sleep(min(0.02, end - time.monotonic()))
+            # Interruptible sleep
+            elapsed = time.monotonic() - t0
+            left = max(0, cfg.interval - elapsed)
+            end = time.monotonic() + left
+            while time.monotonic() < end and alive:
+                sleep_ms = end - time.monotonic()
+                if sleep_ms > 0:
+                    time.sleep(min(0.02, sleep_ms))
+        except Exception as e:
+            # Safety net: log the error and continue probing instead of crashing
+            rpt._nl()
+            print(f"\n  {C.R}MONITOR ERROR: {e}{C.N}", flush=True)
+            rpt._nl()
 
     db.close()
     df.flush()

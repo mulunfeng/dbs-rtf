@@ -308,6 +308,12 @@ class RTOMonitor:
         self._started = True
         return self
 
+    def is_alive(self):
+        """Check if the RTO monitor subprocess is still running."""
+        if self.proc and self.proc.poll() is None:
+            return True
+        return False
+
     def stop(self):
         if self.proc:
             try:
@@ -350,6 +356,9 @@ def test_primary_failover(rto, round_num):
     kill_container(master_name)
     print(f"    Killed {master_name} at {datetime.now().strftime('%H:%M:%S')}", flush=True)
 
+    # Record log file mtime before failover to filter stale RTO entries
+    pre_failover_mtime = os.path.getmtime(RTO_LOG_FILE) if os.path.exists(RTO_LOG_FILE) else None
+
     # Wait for failover (3 consecutive pings + processing = ~15s)
     time.sleep(25)
 
@@ -361,12 +370,19 @@ def test_primary_failover(rto, round_num):
 
     print(f"    Failover complete: {replica_name} is now master ({new_addr})", flush=True)
 
+    # Check if RTO monitor is still alive; restart if needed
+    if not rto.is_alive():
+        print(f"    {C.R}RTO monitor died mid-test — restarting...{C.N}", flush=True)
+        rto._started = False  # force fresh restart
+        rto.start()
+        time.sleep(2)
+
     # Verify RPO
     rc, verify_out, _ = rto.verify()
     rpo_ok = "no data loss detected" in verify_out
 
-    # Parse RTO from the stress log
-    rto_val = _parse_rto_from_log(RTO_LOG_FILE)
+    # Parse RTO from the stress log, filtering out entries written before failover
+    rto_val = _parse_rto_from_log(RTO_LOG_FILE, after_timestamp=pre_failover_mtime)
 
     if not rpo_ok:
         return {"round": round_num, "scenario": "primary_failover", "status": "FAIL",
@@ -412,6 +428,9 @@ def test_replica_only(rto, round_num):
     kill_container(replica_name)
     print(f"    Killed {replica_name} at {datetime.now().strftime('%H:%M:%S')}", flush=True)
 
+    # Record log file mtime before failure to filter stale RTO entries
+    pre_failover_mtime = os.path.getmtime(RTO_LOG_FILE) if os.path.exists(RTO_LOG_FILE) else None
+
     # Wait briefly — primary should be unaffected
     time.sleep(15)
 
@@ -427,11 +446,18 @@ def test_replica_only(rto, round_num):
         return {"round": round_num, "scenario": "replica_only", "status": "FAIL",
                 "error": f"unexpected failover triggered: master changed from {master_name} to {cur_master}"}
 
+    # Check if RTO monitor is still alive; restart if needed
+    if not rto.is_alive():
+        print(f"    {C.R}RTO monitor died mid-test — restarting...{C.N}", flush=True)
+        rto._started = False  # force fresh restart
+        rto.start()
+        time.sleep(2)
+
     # Verify RPO
     rc, verify_out, _ = rto.verify()
     rpo_ok = "no data loss detected" in verify_out
 
-    rto_val = _parse_rto_from_log(RTO_LOG_FILE)
+    rto_val = _parse_rto_from_log(RTO_LOG_FILE, after_timestamp=pre_failover_mtime)
 
     if not rpo_ok:
         return {"round": round_num, "scenario": "replica_only", "status": "FAIL",
@@ -458,9 +484,20 @@ def test_replica_only(rto, round_num):
             "rto": rto_val, "rpo": 0}
 
 
-def _parse_rto_from_log(log_path):
-    """Parse the latest RTO value from the monitor stress log."""
+def _parse_rto_from_log(log_path, after_timestamp=None):
+    """Parse the latest RTO value from the monitor stress log.
+
+    If after_timestamp is given (as a time.struct_time), only consider
+    entries written after that point, to avoid reading stale values.
+    """
     try:
+        if not os.path.exists(log_path):
+            return None
+        # If a timestamp filter is requested, check file mtime first
+        if after_timestamp is not None:
+            mtime = os.path.getmtime(log_path)
+            if mtime < after_timestamp:
+                return None
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
         import re
@@ -557,6 +594,13 @@ def main():
             if args.rounds > 0 and round_num > args.rounds:
                 alive = False
                 break
+
+            # Ensure RTO monitor is alive before starting a new round
+            if not rto.is_alive():
+                print(f"  {C.R}RTO monitor not running before round {round_num} — restarting...{C.N}", flush=True)
+                rto._started = False
+                rto.start()
+                time.sleep(2)
 
             result = test_func(rto, round_num)
             results.append(result)
