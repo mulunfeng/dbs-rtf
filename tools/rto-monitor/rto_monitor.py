@@ -24,6 +24,7 @@ Requires: Python 3.10+, pymysql
 import argparse
 import os
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -478,6 +479,47 @@ def _to_ranges(nums: list[int]) -> list[str]:
     return ranges
 
 
+def _kill_other_rto_monitors():
+    """Kill other rto_monitor.py processes to prevent interference."""
+    my_pid = os.getpid()
+    try:
+        # Use tasklist to find python.exe processes
+        out = subprocess.check_output(
+            ["tasklist", "/FI", "IMAGENAME eq python.exe", "/FO", "CSV", "/NH"],
+            text=True, stderr=subprocess.DEVNULL
+        )
+        killed_any = False
+        for line in out.strip().splitlines():
+            # CSV format: "python.exe","12345","Console","1","10,000 K"
+            parts = line.split(",")
+            if len(parts) >= 2:
+                pid_str = parts[1].strip('"')
+                try:
+                    pid = int(pid_str)
+                except ValueError:
+                    continue
+                if pid == my_pid:
+                    continue
+                # Check if this python process is running rto_monitor.py
+                try:
+                    cmdline = subprocess.check_output(
+                        ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine", "/format:TextValuelist"],
+                        text=True, stderr=subprocess.DEVNULL
+                    )
+                    if "rto_monitor.py" in cmdline:
+                        subprocess.run(
+                            ["taskkill", "/F", "/PID", str(pid), "/T"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                        )
+                        killed_any = True
+                except Exception:
+                    pass
+        if killed_any:
+            time.sleep(0.5)  # Let processes exit
+    except Exception:
+        pass
+
+
 # ── Main ────────────────────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(
@@ -540,6 +582,9 @@ Examples:
         cfg.database = a.database
         cfg.connect_timeout = a.connect_timeout
         cfg.interval = a.interval
+
+        # Kill any other rto_monitor.py processes before starting
+        _kill_other_rto_monitors()
 
         try:
             setup_table(cfg.host, cfg.port, cfg.user, cfg.password, cfg.database, cfg.connect_timeout)
