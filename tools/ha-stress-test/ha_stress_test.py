@@ -499,12 +499,15 @@ def test_primary_failover(rto, round_num):
     rto_str = f"{rto_val:.3f}" if rto_val is not None else "N/A"
     print(f"    RTO={rto_str} (threshold {MAX_RTO_PRIMARY}s)  RPO=0  {C.G}PASS{C.N}", flush=True)
 
-    # Recovery: start old master and let HA agent auto-demote it
-    print(f"    Recovering: restarting {master_name} (HA will auto-demote)...", flush=True)
+    # Recovery: start old master and explicitly set it as replica
+    print(f"    Recovering: restarting {master_name} (ensuring read_only)...", flush=True)
     start_container(master_name)
     if not wait_for_replication(master_name, timeout=180):
         return {"round": round_num, "scenario": "primary_failover", "status": "FAIL",
                 "rto": rto_val, "rpo": 0, "error": f"HA did not auto-demote {master_name} as replica"}
+
+    # Force read_only to prevent misidentification as master in next round
+    set_read_only(master_name, True)
 
     # Wait for stability between rounds
     time.sleep(5)
