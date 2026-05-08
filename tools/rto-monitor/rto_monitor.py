@@ -171,6 +171,11 @@ class Reporter:
 
     def _pr(self, s: str, color: str = ""):
         print(f"{color}{s}{C.N}", end="", flush=True)
+        # Force OS-level flush for Windows file-handle inheritance
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
         self._col += len(s)
 
     def record(self, ok: bool, ms: float, err: str | None = None):

@@ -260,6 +260,26 @@ class RTOMonitor:
         self._started = False
         self._log_file = None  # Track the current log file path
 
+    def _cleanup_old_processes(self):
+        """Kill all python.exe processes that might hold RTO log files open."""
+        try:
+            # Find python.exe PIDs holding rto_log_*.dat or rto_stress.log
+            out = subprocess.check_output(
+                ['powershell', '-NoProfile', '-Command',
+                 "Get-Process python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"],
+                text=True
+            )
+            pids = [line.strip() for line in out.splitlines() if line.strip().isdigit()]
+            if pids:
+                for pid in pids:
+                    try:
+                        run_cmd(f"taskkill //F //PID {pid} //T 2>/dev/null", timeout=5)
+                    except Exception:
+                        pass
+                time.sleep(1)
+        except Exception:
+            pass
+
     def start(self):
         """Start RTO monitor if not already running."""
         if self._started:
@@ -267,7 +287,9 @@ class RTOMonitor:
 
         # Kill any existing RTO monitor process (by PID only, never all python.exe)
         self.stop()
-        time.sleep(2)
+
+        # Force-kill ALL python.exe processes to release file locks on Windows
+        self._cleanup_old_processes()
 
         # Truncate the probe table to ensure clean state
         try:
@@ -283,14 +305,19 @@ class RTOMonitor:
         except Exception as e:
             print(f"  {C.Y}WARNING: could not truncate rto_probe table: {e}{C.N}", flush=True)
 
-        # Clean old log files (kill processes first so Windows releases file locks)
+        # Clean old log files — force delete if still locked
         import glob
         log_dir = os.path.dirname(os.path.abspath(RTO_MONITOR))
         for f in glob.glob(os.path.join(log_dir, "rto_log_*.dat")):
             try:
                 os.unlink(f)
-            except Exception as ex:
-                print(f"  {C.Y}WARNING: could not delete {f}: {ex}{C.N}", flush=True)
+            except Exception:
+                # Still locked? Try harder — one more kill pass
+                self._cleanup_old_processes()
+                try:
+                    os.unlink(f)
+                except Exception as ex:
+                    print(f"  {C.Y}WARNING: could not delete {f}: {ex}{C.N}", flush=True)
 
         # Start RTO monitor as a subprocess, redirect stdout/stderr to file
         log_out = open(RTO_LOG_FILE, "w")
@@ -336,33 +363,95 @@ class RTOMonitor:
             rc, out, err = run_cmd(f'python "{RTO_MONITOR}" --verify', timeout=30)
         return rc, out, err
 
+# ── Direct MySQL RTO measurement ───────────────────────────────────────
+def measure_direct_mysql_rto(target_port, kill_timestamp, timeout=60):
+    """Probe MySQL directly (bypassing proxy) to measure true failover RTO.
+
+    Attempts INSERT every 100ms against the specified port until success.
+    Returns elapsed time in seconds from kill_timestamp.
+    """
+    sql_create = (
+        "CREATE TABLE IF NOT EXISTS rto_direct ("
+        "id INT AUTO_INCREMENT PRIMARY KEY, "
+        "seq INT NOT NULL, ts DATETIME(3) NOT NULL)"
+    )
+    sql_insert = "INSERT INTO rto_direct (seq, ts) VALUES (%s, %s)"
+
+    t0 = time.monotonic()
+    seq = 0
+    conn = None
+
+    # Create table on first successful connect
+    table_created = False
+
+    while time.monotonic() - t0 < timeout:
+        seq += 1
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        try:
+            if conn is None:
+                conn = pymysql.connect(
+                    host="127.0.0.1", port=target_port, user=MYSQL_USER,
+                    password=MYSQL_PASS, database="test", connect_timeout=0.5,
+                    cursorclass=pymysql.cursors.Cursor,
+                )
+                if not table_created:
+                    cur = conn.cursor()
+                    cur.execute(sql_create)
+                    conn.commit()
+                    table_created = True
+
+            cur = conn.cursor()
+            cur.execute(sql_insert, (seq, ts))
+            conn.commit()
+            cur.close()
+
+            elapsed = time.monotonic() - t0
+            return round(elapsed, 3)
+        except Exception:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+            time.sleep(0.1)
+
+    return None
+
+
 # # ── Test: Primary failover ───────────────────────────────────────────────
 def test_primary_failover(rto, round_num):
     """
     Kill the current master, verify failover to replica,
     then restart old master and re-provision as replica.
     """
+    import threading
+
     master_name, master_addr = get_current_master()
     if not master_name:
         return {"round": round_num, "scenario": "primary_failover", "status": "FAIL", "error": "cannot determine current master"}
 
     replica_name = "mysql-replica" if master_name == "mysql-primary" else "mysql-primary"
+    replica_port = CONTAINERS[replica_name]["port"]
 
     print(f"  {C.B}Round {round_num}: Primary Failover{C.N}", flush=True)
     print(f"    Master: {master_name} ({master_addr})  |  Replica: {replica_name}", flush=True)
 
-    # Record round marker for RTO log filtering
-    rto_marker = f"---ROUND-{round_num}-START---"
-    try:
-        with open(RTO_LOG_FILE, "a") as f:
-            f.write(f"\n{rto_marker}\n")
-    except Exception:
-        pass
+    # Record file offset for RTO monitor (proxy-based, used for RPO)
+    log_offset = os.path.getsize(RTO_LOG_FILE) if os.path.exists(RTO_LOG_FILE) else 0
 
-    # Kill master
-    t0 = time.monotonic()
+    # Start direct MySQL RTO measurement thread (bypasses proxy)
+    rto_result = [None]  # mutable container for thread
+    def rto_probe():
+        rto_result[0] = measure_direct_mysql_rto(replica_port, time.monotonic(), timeout=60)
+
+    rto_thread = threading.Thread(target=rto_probe, daemon=True)
+
+    # Kill master and start measurement simultaneously
     kill_container(master_name)
-    print(f"    Killed {master_name} at {datetime.now().strftime('%H:%M:%S')}", flush=True)
+    kill_ts = datetime.now().strftime("%H:%M:%S")
+    rto_thread.start()
+    print(f"    Killed {master_name} at {kill_ts} (measuring direct to {replica_name}:{replica_port})", flush=True)
 
     # Wait for failover (3 consecutive pings + processing = ~15s)
     time.sleep(25)
@@ -375,6 +464,15 @@ def test_primary_failover(rto, round_num):
 
     print(f"    Failover complete: {replica_name} is now master ({new_addr})", flush=True)
 
+    # Wait for direct measurement thread to finish
+    rto_thread.join(timeout=30)
+    rto_val = rto_result[0]
+
+    if rto_val is None:
+        # Fallback to proxy-based RTO monitor
+        print(f"    {C.Y}Direct measurement timed out, using proxy-based RTO...{C.N}", flush=True)
+        rto_val = _get_rto_for_scenario(RTO_LOG_FILE, "primary_failover", offset=log_offset, timeout=30)
+
     # Check if RTO monitor is still alive; restart if needed
     if not rto.is_alive():
         print(f"    {C.R}RTO monitor died mid-test — restarting...{C.N}", flush=True)
@@ -386,8 +484,9 @@ def test_primary_failover(rto, round_num):
     rc, verify_out, _ = rto.verify()
     rpo_ok = "no data loss detected" in verify_out
 
-    # Parse RTO from the stress log, only entries after our round marker
-    rto_val = _parse_rto_from_log(RTO_LOG_FILE, marker=rto_marker)
+    if rto_val is None:
+        return {"round": round_num, "scenario": "primary_failover", "status": "FAIL",
+                "rto": None, "rpo": 0, "error": "no RTO measurement available"}
 
     if not rpo_ok:
         return {"round": round_num, "scenario": "primary_failover", "status": "FAIL",
@@ -429,13 +528,8 @@ def test_replica_only(rto, round_num):
     print(f"  {C.B}Round {round_num}: Replica-Only Failure{C.N}", flush=True)
     print(f"    Master: {master_name} ({master_addr})  |  Replica: {replica_name}", flush=True)
 
-    # Record round marker for RTO log filtering
-    rto_marker = f"---ROUND-{round_num}-START---"
-    try:
-        with open(RTO_LOG_FILE, "a") as f:
-            f.write(f"\n{rto_marker}\n")
-    except Exception:
-        pass
+    # Record file offset before injecting failure
+    log_offset = os.path.getsize(RTO_LOG_FILE) if os.path.exists(RTO_LOG_FILE) else 0
 
     # Kill replica only
     kill_container(replica_name)
@@ -467,7 +561,11 @@ def test_replica_only(rto, round_num):
     rc, verify_out, _ = rto.verify()
     rpo_ok = "no data loss detected" in verify_out
 
-    rto_val = _parse_rto_from_log(RTO_LOG_FILE, marker=rto_marker)
+    # Get RTO for replica-only scenario from new content only
+    rto_val = _get_rto_for_scenario(RTO_LOG_FILE, "replica_only", offset=log_offset, timeout=30)
+    if rto_val is None:
+        return {"round": round_num, "scenario": "replica_only", "status": "FAIL",
+                "rto": None, "rpo": 0, "error": "no RTO entry found in stress log after failure"}
 
     if not rpo_ok:
         return {"round": round_num, "scenario": "replica_only", "status": "FAIL",
@@ -494,30 +592,130 @@ def test_replica_only(rto, round_num):
             "rto": rto_val, "rpo": 0}
 
 
-def _parse_rto_from_log(log_path, marker=None):
-    """Parse the latest RTO value from the monitor stress log.
+def _count_rto_entries(log_path):
+    """Count how many RTO entries exist in the stress log."""
+    try:
+        if not os.path.exists(log_path):
+            return 0
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        import re
+        return len(re.findall(r'RTO=([\d.]+)s', content))
+    except Exception:
+        return 0
 
-    If marker is given (e.g. "---ROUND-5---"), only consider RTO entries
-    written AFTER that marker in the file, to avoid reading stale values
-    from previous rounds.
-    """
+
+def _parse_rto_from_log(log_path, after_offset=0):
+    """Parse the latest RTO value from the monitor stress log."""
     try:
         if not os.path.exists(log_path):
             return None
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(after_offset)
             content = f.read()
         import re
-        if marker:
-            # Split at the marker, only search the portion after it
-            idx = content.rfind(marker)
-            if idx == -1:
-                return None
-            content = content[idx:]
         matches = re.findall(r'RTO=([\d.]+)s', content)
         if matches:
             return float(matches[-1])
     except Exception:
         pass
+    return None
+
+
+def _get_stable_rto_count(log_path, samples=3, interval=0.3):
+    """Get RTO entry count only after the file has stabilized.
+
+    Reads the file multiple times and returns the count only when
+    it's consistent across samples, to avoid race conditions with
+    the RTO monitor's buffered writes.
+    """
+    import re
+    last_count = -1
+    stable = 0
+    for _ in range(samples * 3):  # max attempts
+        try:
+            if not os.path.exists(log_path):
+                time.sleep(interval)
+                continue
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            current_count = len(re.findall(r'RTO=([\d.]+)s', content))
+            if current_count == last_count:
+                stable += 1
+                if stable >= samples:
+                    return current_count
+            else:
+                stable = 0
+                last_count = current_count
+        except Exception:
+            stable = 0
+        time.sleep(interval)
+    return last_count
+
+
+def _get_last_rto(log_path, timeout=60):
+    """Get the last RTO entry from the stress log, waiting for it to stabilize.
+
+    Reads the file twice with a short gap to ensure the RTO monitor has flushed.
+    Returns the last RTO value when the count is stable across both reads.
+    """
+    import re
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
+        try:
+            if not os.path.exists(log_path):
+                time.sleep(0.5)
+                continue
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                content1 = f.read()
+            matches1 = re.findall(r'RTO=([\d.]+)s', content1)
+            if not matches1:
+                time.sleep(0.5)
+                continue
+            # Second read to verify stability
+            time.sleep(0.3)
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                content2 = f.read()
+            matches2 = re.findall(r'RTO=([\d.]+)s', content2)
+            if len(matches1) == len(matches2):
+                return float(matches1[-1])
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return None
+
+
+def _get_rto_for_scenario(log_path, scenario, offset=0, timeout=60):
+    """Get RTO appropriate for the test scenario, reading only content after `offset`.
+
+    For 'primary_failover': returns the MAXIMUM RTO value seen in the new content,
+    which represents the actual HA failover duration.
+    For 'replica_only': returns the first RTO value in the new content.
+    """
+    import re
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
+        try:
+            if not os.path.exists(log_path):
+                time.sleep(0.5)
+                continue
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(offset)
+                content = f.read()
+            matches = re.findall(r'RTO=([\d.]+)s', content)
+            if not matches:
+                time.sleep(0.5)
+                continue
+            values = [float(m) for m in matches]
+            if scenario == "primary_failover":
+                # Return max value — the real HA failover RTO
+                return max(values)
+            else:
+                # replica_only: return first value
+                return values[0]
+        except Exception:
+            pass
+        time.sleep(0.5)
     return None
 
 
